@@ -1,0 +1,261 @@
+<!DOCTYPE html>
+<html lang="it">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Excel Joiner Tool - Client Side</title>
+    
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/FileSaver.js/2.0.5/FileSaver.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf-autotable/3.5.25/jspdf.plugin.autotable.min.js"></script>
+
+    <style>
+        :root {
+            --primary: #2c3e50;
+            --accent: #27ae60;
+            --error: #e74c3c;
+            --bg: #f4f7f6;
+        }
+
+        body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; background-color: var(--bg); margin: 0; padding: 20px; color: #333; }
+        .container { max-width: 1100px; margin: auto; background: white; padding: 30px; border-radius: 12px; box-shadow: 0 4px 15px rgba(0,0,0,0.1); }
+        h1 { color: var(--primary); text-align: center; border-bottom: 2px solid var(--bg); padding-bottom: 15px; }
+        
+        .upload-section { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; margin-bottom: 30px; }
+        .card { border: 1px border-radius: 8px; padding: 15px; background: #fafafa; border: 1px solid #ddd; }
+        .card h3 { margin-top: 0; font-size: 1.1rem; color: var(--primary); }
+        
+        .config-section { display: none; background: #eef2f3; padding: 20px; border-radius: 8px; margin-bottom: 20px; }
+        .controls { display: flex; flex-wrap: wrap; gap: 15px; align-items: flex-end; }
+        .control-group { display: flex; flex-direction: column; }
+        label { font-weight: bold; font-size: 0.9rem; margin-bottom: 5px; }
+        select { padding: 8px; border-radius: 4px; border: 1px solid #ccc; }
+
+        .btn { padding: 10px 20px; border: none; border-radius: 5px; cursor: pointer; font-weight: bold; transition: 0.3s; }
+        .btn-primary { background: var(--accent); color: white; }
+        .btn-primary:hover { background: #219150; }
+        .btn-export { background: #3498db; color: white; margin-right: 5px; font-size: 0.8rem; }
+        
+        .table-container { margin-top: 30px; overflow-x: auto; }
+        table { width: 100%; border-collapse: collapse; margin-bottom: 20px; font-size: 0.85rem; }
+        th, td { border: 1px solid #ddd; padding: 10px; text-align: left; }
+        th { background: #f2f2f2; position: sticky; top: 0; }
+        
+        .error-row { color: var(--error); font-weight: bold; }
+        .hidden { display: none; }
+        .action-bar { margin-top: 10px; display: flex; gap: 10px; }
+    </style>
+</head>
+<body>
+
+<div class="container">
+    <h1>Excel Joiner Pro</h1>
+
+    <div class="upload-section">
+        <div class="card">
+            <h3>1. Situazione Contabile (File Base)</h3>
+            <input type="file" id="file1" accept=".xlsx, .xls">
+        </div>
+        <div class="card">
+            <h3>2. Mappatura (File Join)</h3>
+            <input type="file" id="file2" accept=".xlsx, .xls">
+        </div>
+    </div>
+
+    <div id="configSection" class="config-section">
+        <h3>Impostazioni Join</h3>
+        <div class="controls">
+            <div class="control-group">
+                <label>Chiave File 1:</label>
+                <select id="keyFile1"></select>
+            </div>
+            <div class="control-group">
+                <label>Chiave File 2:</label>
+                <select id="keyFile2"></select>
+            </div>
+            <button class="btn btn-primary" onclick="processData()">Esegui Join</button>
+        </div>
+    </div>
+
+    <div id="resultsArea" class="hidden">
+        <hr>
+        <div style="display: flex; justify-content: space-between; align-items: center;">
+            <h2>Risultati Join</h2>
+            <div class="action-bar">
+                <button class="btn btn-export" onclick="exportData('xlsx', 'success')">Export Excel</button>
+                <button class="btn btn-export" onclick="exportData('json', 'success')">Export JSON</button>
+                <button class="btn btn-export" onclick="exportData('pdf', 'success')">Export PDF</button>
+            </div>
+        </div>
+        <div class="table-container">
+            <table id="tableSuccess"><thead></thead><tbody></tbody></table>
+        </div>
+
+        <div style="display: flex; justify-content: space-between; align-items: center; margin-top: 40px;">
+            <h2 class="error-row">Errori di Join (Senza Match)</h2>
+            <div class="action-bar">
+                <button class="btn btn-export" style="background:#e67e22" onclick="exportData('xlsx', 'error')">Export Errori Excel</button>
+                <button class="btn btn-export" style="background:#e67e22" onclick="exportData('pdf', 'error')">Export Errori PDF</button>
+            </div>
+        </div>
+        <div class="table-container">
+            <table id="tableError"><thead></thead><tbody></tbody></table>
+        </div>
+    </div>
+</div>
+
+<script>
+    let data1 = [], data2 = [];
+    let headers1 = [], headers2 = [];
+    let finalResults = [], errorResults = [];
+
+    // --- Lettura File ---
+    document.getElementById('file1').addEventListener('change', (e) => handleFile(e, 1));
+    document.getElementById('file2').addEventListener('change', (e) => handleFile(e, 2));
+
+    function handleFile(e, fileNum) {
+        const file = e.target.files[0];
+        if (!file) return;
+
+        const reader = new FileReader();
+        reader.onload = function(evt) {
+            const workbook = XLSX.read(evt.target.result, { type: 'binary' });
+            const sheetName = workbook.SheetNames[0];
+            const json = XLSX.utils.sheet_to_json(workbook.Sheets[sheetName]);
+            
+            if (fileNum === 1) {
+                data1 = json;
+                headers1 = Object.keys(json[0] || {});
+                populateSelect('keyFile1', headers1);
+            } else {
+                data2 = json;
+                headers2 = Object.keys(json[0] || {});
+                populateSelect('keyFile2', headers2);
+            }
+            checkConfiguration();
+        };
+        reader.readAsBinaryString(file);
+    }
+
+    function populateSelect(id, options) {
+        const select = document.getElementById(id);
+        select.innerHTML = options.map(h => `<option value="${h}">${h}</option>`).join('');
+    }
+
+    function checkConfiguration() {
+        if (data1.length > 0 && data2.length > 0) {
+            document.getElementById('configSection').style.display = 'block';
+        }
+    }
+
+    // --- Logica di Join ---
+    function processData() {
+        const key1 = document.getElementById('keyFile1').value;
+        const key2 = document.getElementById('keyFile2').value;
+
+        finalResults = [];
+        errorResults = [];
+
+        // Creiamo una mappa del file 2 per ricerche veloci O(1)
+        const map2 = new Map();
+        data2.forEach(row => {
+            const val = String(row[key2]).trim().toLowerCase();
+            map2.set(val, row);
+        });
+
+        // Eseguiamo il join iterando sul file base (Situazione Contabile)
+        data1.forEach(row1 => {
+            const val1 = String(row1[key1]).trim().toLowerCase();
+            if (map2.has(val1)) {
+                // Merge degli oggetti
+                finalResults.push({ ...row1, ...map2.get(val1) });
+            } else {
+                errorResults.push(row1);
+            }
+        });
+
+        renderTables();
+    }
+
+    // --- Rendering UI ---
+    function renderTables() {
+        document.getElementById('resultsArea').classList.remove('hidden');
+        fillTable('tableSuccess', finalResults);
+        fillTable('tableError', errorResults);
+    }
+
+    function fillTable(tableId, data) {
+        const table = document.getElementById(tableId);
+        const thead = table.querySelector('thead');
+        const tbody = table.querySelector('tbody');
+        
+        thead.innerHTML = '';
+        tbody.innerHTML = '';
+
+        if (data.length === 0) {
+            tbody.innerHTML = '<tr><td colspan="100%" style="text-align:center">Nessun dato trovato</td></tr>';
+            return;
+        }
+
+        const headers = Object.keys(data[0]);
+        thead.innerHTML = `<tr>${headers.map(h => `<th>${h}</th>`).join('')}</tr>`;
+
+        // Mostriamo solo le prime 15 righe per performance di rendering
+        const previewData = data.slice(0, 15);
+        previewData.forEach(row => {
+            const tr = document.createElement('tr');
+            tr.innerHTML = headers.map(h => `<td>${row[h] || ''}</td>`).join('');
+            tbody.appendChild(tr);
+        });
+        
+        if (data.length > 15) {
+            const tr = document.createElement('tr');
+            tr.innerHTML = `<td colspan="100%" style="text-align:center; color:#888">... e altre ${data.length - 15} righe ...</td>`;
+            tbody.appendChild(tr);
+        }
+    }
+
+    // --- Esportazione ---
+    function exportData(format, type) {
+        const targetData = (type === 'success') ? finalResults : errorResults;
+        const fileName = (type === 'success') ? 'Risultato_Join' : 'Errori_Join';
+
+        if (targetData.length === 0) {
+            alert("Nessun dato da esportare!");
+            return;
+        }
+
+        if (format === 'xlsx') {
+            const ws = XLSX.utils.json_to_sheet(targetData);
+            const wb = XLSX.utils.book_new();
+            XLSX.utils.book_append_sheet(wb, ws, "Dati");
+            XLSX.writeFile(wb, `${fileName}.xlsx`);
+        } 
+        else if (format === 'json') {
+            const blob = new Blob([JSON.stringify(targetData, null, 2)], { type: "application/json" });
+            saveAs(blob, `${fileName}.json`);
+        } 
+        else if (format === 'pdf') {
+            const { jsPDF } = window.jspdf;
+            const doc = new jsPDF('l', 'mm', 'a4'); // Orientamento landscape
+            
+            const head = [Object.keys(targetData[0])];
+            const body = targetData.map(obj => Object.values(obj));
+
+            doc.text(fileName.replace('_', ' '), 14, 15);
+            doc.autoTable({
+                startY: 20,
+                head: head,
+                body: body,
+                theme: 'grid',
+                styles: { fontSize: 7 },
+                headStyles: { fillStyle: [44, 62, 80] }
+            });
+            doc.save(`${fileName}.pdf`);
+        }
+    }
+</script>
+
+</body>
+</html>
